@@ -1,11 +1,12 @@
 # bifrost-agent
 
-Mac path-tunnel agent for [Bifrost](https://github.com/eskeon/go-bifrost). Connects outbound over WebSocket and exposes a local HTTP app under `/services/{slug}`.
+Mac path-tunnel agent for [Bifrost](https://github.com/eskeon/go-bifrost). Connects outbound over WebSocket and exposes a local HTTP app under Bifrost’s tunnels base path (default `/tunnels/{slug}`).
 
 ## Install
 
 ```bash
-pip install bifrost-agent
+pipx install bifrost-agent
+# or: pip install bifrost-agent  (inside a venv)
 ```
 
 Requires Python 3.11+.
@@ -25,9 +26,8 @@ The token embeds the Bifrost WebSocket URL and auth secret. Local upstream URLs 
 
 ```bash
 sudo bifrost tunnel install <token>   # LaunchDaemon + system config
-bifrost tunnel run                    # foreground (uses saved config)
-bifrost tunnel run <token>            # one-shot / save user config + run
-sudo bifrost tunnel uninstall
+bifrost tunnel list                   # show installed agent(s)
+sudo bifrost tunnel uninstall         # remove daemon + system config
 bifrost version
 ```
 
@@ -41,6 +41,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 bifrost version
+bifrost tunnel list
 ```
 
 ## Publish

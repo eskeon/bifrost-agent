@@ -1,19 +1,33 @@
-"""macOS LaunchDaemon install/uninstall for the tunnel agent."""
+"""macOS LaunchDaemon install/uninstall/list for the tunnel agent."""
 
 from __future__ import annotations
 
+import json
 import os
 import plistlib
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
-from bifrost_agent.config import SYSTEM_CONFIG, Config, save
+from bifrost_agent.config import SYSTEM_CONFIG, Config, load, save
 
 LABEL = "com.bifrost.tunnel"
 PLIST_PATH = Path("/Library/LaunchDaemons") / f"{LABEL}.plist"
 LOG_PATH = Path("/Library/Logs/bifrost-tunnel.log")
+
+
+@dataclass
+class InstanceInfo:
+    label: str
+    plist_path: Path
+    config_path: Path
+    log_path: Path
+    installed: bool
+    loaded: bool
+    url: str
+    token_preview: str
 
 
 def _require_root() -> None:
@@ -22,7 +36,6 @@ def _require_root() -> None:
 
 
 def _bifrost_bin() -> str:
-    # Prefer the invoking executable (works under `sudo bifrost …`).
     argv0 = Path(sys.argv[0]).resolve()
     if argv0.is_file() and os.access(argv0, os.X_OK):
         return str(argv0)
@@ -32,21 +45,22 @@ def _bifrost_bin() -> str:
     return sys.executable
 
 
+def _daemon_program() -> list[str]:
+    bin_path = _bifrost_bin()
+    # Hidden `serve` entrypoint used only by LaunchDaemon.
+    if Path(bin_path).name.startswith("python"):
+        return [bin_path, "-m", "bifrost_agent", "tunnel", "serve"]
+    return [bin_path, "tunnel", "serve"]
+
+
 def install(cfg: Config) -> None:
     _require_root()
     save(cfg, SYSTEM_CONFIG)
 
-    bin_path = _bifrost_bin()
-    # If invoked as `python -m bifrost_agent`, run via module.
-    if Path(bin_path).name.startswith("python"):
-        program = [bin_path, "-m", "bifrost_agent", "tunnel", "run"]
-    else:
-        program = [bin_path, "tunnel", "run"]
-
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     plist = {
         "Label": LABEL,
-        "ProgramArguments": program,
+        "ProgramArguments": _daemon_program(),
         "RunAtLoad": True,
         "KeepAlive": True,
         "StandardOutPath": str(LOG_PATH),
@@ -57,7 +71,6 @@ def install(cfg: Config) -> None:
         plistlib.dump(plist, f)
     os.chmod(PLIST_PATH, 0o644)
 
-    # bootout if already loaded, then bootstrap
     subprocess.run(
         ["launchctl", "bootout", f"system/{LABEL}"],
         check=False,
@@ -82,3 +95,56 @@ def uninstall() -> None:
         PLIST_PATH.unlink()
     if SYSTEM_CONFIG.exists():
         SYSTEM_CONFIG.unlink()
+
+
+def _is_loaded() -> bool:
+    proc = subprocess.run(
+        ["launchctl", "print", f"system/{LABEL}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0
+
+
+def _mask_token(token: str) -> str:
+    token = (token or "").strip()
+    if len(token) <= 10:
+        return "***" if token else ""
+    return token[:6] + "…" + token[-4:]
+
+
+def list_instances() -> list[InstanceInfo]:
+    """Return installed tunnel agent instances (currently at most one system daemon)."""
+    installed = PLIST_PATH.is_file()
+    loaded = _is_loaded() if installed else False
+    url = ""
+    token_preview = ""
+    if SYSTEM_CONFIG.is_file():
+        try:
+            cfg = load(SYSTEM_CONFIG)
+            url = cfg.url
+            token_preview = _mask_token(cfg.token)
+        except Exception:  # noqa: BLE001
+            try:
+                raw = json.loads(SYSTEM_CONFIG.read_text(encoding="utf-8"))
+                url = str(raw.get("url") or "")
+                token_preview = _mask_token(str(raw.get("token") or ""))
+            except Exception:  # noqa: BLE001
+                pass
+
+    if not installed and not SYSTEM_CONFIG.is_file():
+        return []
+
+    return [
+        InstanceInfo(
+            label=LABEL,
+            plist_path=PLIST_PATH,
+            config_path=SYSTEM_CONFIG,
+            log_path=LOG_PATH,
+            installed=installed,
+            loaded=loaded,
+            url=url,
+            token_preview=token_preview,
+        )
+    ]
