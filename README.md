@@ -45,4 +45,6 @@ bifrost version
 
 ## Publish
 
-Tag a release; GitHub Actions builds and publishes to PyPI as `bifrost-agent`.
+Repo: https://github.com/eskeon/bifrost-agent  
+
+Tag a release (`v*`); GitHub Actions builds and publishes to PyPI as `bifrost-agent`.

@@ -18,8 +18,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/eskeon/go-bifrost-tunnel"
-Repository = "https://github.com/eskeon/go-bifrost-tunnel"
+Homepage = "https://github.com/eskeon/bifrost-agent"
+Repository = "https://github.com/eskeon/bifrost-agent"
 
 [project.scripts]
 bifrost = "bifrost_agent.cli:main"
