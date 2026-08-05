@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bifrost-agent"
-version = "0.1.1"
+version = "0.2.0"
 description = "Bifrost path-tunnel agent — connect a local Mac app to Bifrost"
 readme = "README.md"
 requires-python = ">=3.11"

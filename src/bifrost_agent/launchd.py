@@ -1,4 +1,4 @@
-"""macOS LaunchDaemon install/uninstall/list for the tunnel agent."""
+"""macOS LaunchDaemon install/uninstall/list for multi-instance tunnel agents."""
 
 from __future__ import annotations
 
@@ -11,15 +11,28 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from bifrost_agent.config import SYSTEM_CONFIG, Config, load, save
+from bifrost_agent.config import (
+    INSTANCES_ROOT,
+    LEGACY_INSTANCE_ID,
+    LEGACY_SYSTEM_CONFIG,
+    Config,
+    instance_config_path,
+    instance_id_for_token,
+    load,
+    save,
+)
 
-LABEL = "com.bifrost.tunnel"
-PLIST_PATH = Path("/Library/LaunchDaemons") / f"{LABEL}.plist"
-LOG_PATH = Path("/Library/Logs/bifrost-tunnel.log")
+LABEL_PREFIX = "com.bifrost.tunnel"
+LEGACY_LABEL = LABEL_PREFIX
+LEGACY_PLIST_PATH = Path("/Library/LaunchDaemons") / f"{LEGACY_LABEL}.plist"
+LEGACY_LOG_PATH = Path("/Library/Logs/bifrost-tunnel.log")
+LAUNCH_DAEMONS = Path("/Library/LaunchDaemons")
+LOGS_DIR = Path("/Library/Logs")
 
 
 @dataclass
 class InstanceInfo:
+    id: str
     label: str
     plist_path: Path
     config_path: Path
@@ -27,7 +40,6 @@ class InstanceInfo:
     installed: bool
     loaded: bool
     url: str
-    token_preview: str
 
 
 def _require_root() -> None:
@@ -45,61 +57,42 @@ def _bifrost_bin() -> str:
     return sys.executable
 
 
-def _daemon_program() -> list[str]:
+def label_for(instance_id: str) -> str:
+    if instance_id == LEGACY_INSTANCE_ID:
+        return LEGACY_LABEL
+    return f"{LABEL_PREFIX}.{instance_id}"
+
+
+def plist_path_for(instance_id: str) -> Path:
+    if instance_id == LEGACY_INSTANCE_ID:
+        return LEGACY_PLIST_PATH
+    return LAUNCH_DAEMONS / f"{LABEL_PREFIX}.{instance_id}.plist"
+
+
+def log_path_for(instance_id: str) -> Path:
+    if instance_id == LEGACY_INSTANCE_ID:
+        return LEGACY_LOG_PATH
+    return LOGS_DIR / f"bifrost-tunnel-{instance_id}.log"
+
+
+def _daemon_program(instance_id: str) -> list[str]:
     bin_path = _bifrost_bin()
-    # Hidden `serve` entrypoint used only by LaunchDaemon.
     if Path(bin_path).name.startswith("python"):
-        return [bin_path, "-m", "bifrost_agent", "tunnel", "serve"]
-    return [bin_path, "tunnel", "serve"]
+        return [
+            bin_path,
+            "-m",
+            "bifrost_agent",
+            "tunnel",
+            "serve",
+            "--instance",
+            instance_id,
+        ]
+    return [bin_path, "tunnel", "serve", "--instance", instance_id]
 
 
-def install(cfg: Config) -> None:
-    _require_root()
-    save(cfg, SYSTEM_CONFIG)
-
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    plist = {
-        "Label": LABEL,
-        "ProgramArguments": _daemon_program(),
-        "RunAtLoad": True,
-        "KeepAlive": True,
-        "StandardOutPath": str(LOG_PATH),
-        "StandardErrorPath": str(LOG_PATH),
-    }
-    PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with PLIST_PATH.open("wb") as f:
-        plistlib.dump(plist, f)
-    os.chmod(PLIST_PATH, 0o644)
-
-    subprocess.run(
-        ["launchctl", "bootout", f"system/{LABEL}"],
-        check=False,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["launchctl", "bootstrap", "system", str(PLIST_PATH)],
-        check=True,
-    )
-    subprocess.run(["launchctl", "enable", f"system/{LABEL}"], check=False)
-    subprocess.run(["launchctl", "kickstart", "-k", f"system/{LABEL}"], check=False)
-
-
-def uninstall() -> None:
-    _require_root()
-    subprocess.run(
-        ["launchctl", "bootout", f"system/{LABEL}"],
-        check=False,
-        capture_output=True,
-    )
-    if PLIST_PATH.exists():
-        PLIST_PATH.unlink()
-    if SYSTEM_CONFIG.exists():
-        SYSTEM_CONFIG.unlink()
-
-
-def _is_loaded() -> bool:
+def _is_loaded(label: str) -> bool:
     proc = subprocess.run(
-        ["launchctl", "print", f"system/{LABEL}"],
+        ["launchctl", "print", f"system/{label}"],
         check=False,
         capture_output=True,
         text=True,
@@ -107,44 +100,158 @@ def _is_loaded() -> bool:
     return proc.returncode == 0
 
 
-def _mask_token(token: str) -> str:
-    token = (token or "").strip()
-    if len(token) <= 10:
-        return "***" if token else ""
-    return token[:6] + "…" + token[-4:]
+def _bootout(label: str) -> None:
+    subprocess.run(
+        ["launchctl", "bootout", f"system/{label}"],
+        check=False,
+        capture_output=True,
+    )
+
+
+def _load_config_url(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        return load(path).url
+    except Exception:  # noqa: BLE001
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return str(raw.get("url") or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+
+def install(cfg: Config) -> str:
+    """Install or replace one instance. Returns instance id."""
+    _require_root()
+    instance_id = instance_id_for_token(cfg.token)
+    label = label_for(instance_id)
+    plist_path = plist_path_for(instance_id)
+    log_path = log_path_for(instance_id)
+    config_path = instance_config_path(instance_id)
+
+    save(cfg, config_path)
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    plist = {
+        "Label": label,
+        "ProgramArguments": _daemon_program(instance_id),
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "StandardOutPath": str(log_path),
+        "StandardErrorPath": str(log_path),
+    }
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    with plist_path.open("wb") as f:
+        plistlib.dump(plist, f)
+    os.chmod(plist_path, 0o644)
+
+    _bootout(label)
+    subprocess.run(
+        ["launchctl", "bootstrap", "system", str(plist_path)],
+        check=True,
+    )
+    subprocess.run(["launchctl", "enable", f"system/{label}"], check=False)
+    subprocess.run(["launchctl", "kickstart", "-k", f"system/{label}"], check=False)
+    return instance_id
+
+
+def uninstall(instance_id: str) -> None:
+    """Remove one instance by id (including legacy)."""
+    _require_root()
+    if not instance_id:
+        raise ValueError("instance id is required")
+
+    label = label_for(instance_id)
+    plist_path = plist_path_for(instance_id)
+    config_path = instance_config_path(instance_id)
+
+    _bootout(label)
+    if plist_path.exists():
+        plist_path.unlink()
+    if config_path.exists():
+        config_path.unlink()
+    # Remove empty instance directory (not legacy support root).
+    if instance_id != LEGACY_INSTANCE_ID:
+        parent = config_path.parent
+        if parent.is_dir() and parent != INSTANCES_ROOT:
+            try:
+                parent.rmdir()
+            except OSError:
+                pass
+
+
+def uninstall_all() -> list[str]:
+    """Remove every known instance. Returns removed ids."""
+    _require_root()
+    ids = [row.id for row in list_instances()]
+    for instance_id in ids:
+        uninstall(instance_id)
+    return ids
+
+
+def get_instance(instance_id: str) -> InstanceInfo | None:
+    for row in list_instances():
+        if row.id == instance_id:
+            return row
+    return None
 
 
 def list_instances() -> list[InstanceInfo]:
-    """Return installed tunnel agent instances (currently at most one system daemon)."""
-    installed = PLIST_PATH.is_file()
-    loaded = _is_loaded() if installed else False
-    url = ""
-    token_preview = ""
-    if SYSTEM_CONFIG.is_file():
-        try:
-            cfg = load(SYSTEM_CONFIG)
-            url = cfg.url
-            token_preview = _mask_token(cfg.token)
-        except Exception:  # noqa: BLE001
-            try:
-                raw = json.loads(SYSTEM_CONFIG.read_text(encoding="utf-8"))
-                url = str(raw.get("url") or "")
-                token_preview = _mask_token(str(raw.get("token") or ""))
-            except Exception:  # noqa: BLE001
-                pass
+    """Return all installed tunnel agent instances (multi + legacy)."""
+    seen: set[str] = set()
+    rows: list[InstanceInfo] = []
 
-    if not installed and not SYSTEM_CONFIG.is_file():
-        return []
+    # Multi-instance plists: com.bifrost.tunnel.<id>.plist
+    if LAUNCH_DAEMONS.is_dir():
+        prefix = f"{LABEL_PREFIX}."
+        for plist in sorted(LAUNCH_DAEMONS.glob(f"{LABEL_PREFIX}.*.plist")):
+            name = plist.name
+            if not name.startswith(prefix) or not name.endswith(".plist"):
+                continue
+            instance_id = name[len(prefix) : -len(".plist")]
+            if not instance_id or instance_id in seen:
+                continue
+            seen.add(instance_id)
+            rows.append(_info_for(instance_id))
 
-    return [
-        InstanceInfo(
-            label=LABEL,
-            plist_path=PLIST_PATH,
-            config_path=SYSTEM_CONFIG,
-            log_path=LOG_PATH,
-            installed=installed,
-            loaded=loaded,
-            url=url,
-            token_preview=token_preview,
-        )
-    ]
+    # Config dirs without plist yet
+    if INSTANCES_ROOT.is_dir():
+        for child in sorted(INSTANCES_ROOT.iterdir()):
+            if not child.is_dir():
+                continue
+            instance_id = child.name
+            if instance_id in seen:
+                continue
+            cfg = child / "config.json"
+            if not cfg.is_file():
+                continue
+            seen.add(instance_id)
+            rows.append(_info_for(instance_id))
+
+    # Legacy single-instance
+    if LEGACY_PLIST_PATH.is_file() or LEGACY_SYSTEM_CONFIG.is_file():
+        if LEGACY_INSTANCE_ID not in seen:
+            rows.append(_info_for(LEGACY_INSTANCE_ID))
+
+    rows.sort(key=lambda r: r.id)
+    return rows
+
+
+def _info_for(instance_id: str) -> InstanceInfo:
+    label = label_for(instance_id)
+    plist_path = plist_path_for(instance_id)
+    config_path = instance_config_path(instance_id)
+    log_path = log_path_for(instance_id)
+    installed = plist_path.is_file()
+    loaded = _is_loaded(label) if installed else False
+    return InstanceInfo(
+        id=instance_id,
+        label=label,
+        plist_path=plist_path,
+        config_path=config_path,
+        log_path=log_path,
+        installed=installed,
+        loaded=loaded,
+        url=_load_config_url(config_path),
+    )

@@ -22,17 +22,36 @@ sudo bifrost tunnel install <token>
 
 The token embeds the Bifrost WebSocket URL and auth secret. Local upstream URLs are **not** passed on the CLI — they come from the console on each request.
 
+You can install **multiple** tokens on one Mac; each gets its own LaunchDaemon and instance id.
+
 ## Commands
 
 ```bash
-sudo bifrost tunnel install <token>   # LaunchDaemon + system config
-bifrost tunnel list                   # show installed agent(s)
-sudo bifrost tunnel uninstall         # remove daemon + system config
+sudo bifrost tunnel install <token>     # add/replace one instance
+bifrost tunnel list                     # id, state, url, logs path
+bifrost tunnel logs <id>                # last lines of that instance
+bifrost tunnel logs <id> -f             # follow logs
+sudo bifrost tunnel uninstall <id>      # remove one instance
+sudo bifrost tunnel uninstall --all     # remove every instance
 bifrost version
 ```
 
-System config: `/Library/Application Support/bifrost/config.json`  
-Logs: `/Library/Logs/bifrost-tunnel.log`
+`list` example:
+
+```text
+a1b2c3d4e5f6
+  state:   running
+  url:     wss://bifrost.enfeca.cloud/api/v1/tunnel/connect
+  logs:    /Library/Logs/bifrost-tunnel-a1b2c3d4e5f6.log
+```
+
+Per-instance paths:
+
+- Config: `/Library/Application Support/bifrost/instances/<id>/config.json`
+- Logs: `/Library/Logs/bifrost-tunnel-<id>.log`
+- LaunchDaemon: `com.bifrost.tunnel.<id>`
+
+A pre-0.2.0 install appears as instance id `legacy`.
 
 ## Develop
 

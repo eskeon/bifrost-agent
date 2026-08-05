@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
-SYSTEM_CONFIG = Path("/Library/Application Support/bifrost/config.json")
+SUPPORT_ROOT = Path("/Library/Application Support/bifrost")
+INSTANCES_ROOT = SUPPORT_ROOT / "instances"
+# Pre-0.2.0 single-instance layout
+LEGACY_SYSTEM_CONFIG = SUPPORT_ROOT / "config.json"
+LEGACY_INSTANCE_ID = "legacy"
 
 
 @dataclass
@@ -23,15 +28,32 @@ class Config:
             raise ValueError("token is required")
 
 
+def instance_id_for_token(token: str) -> str:
+    """Stable short id from auth token (available at install time)."""
+    digest = hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
+def instance_config_path(instance_id: str) -> Path:
+    if instance_id == LEGACY_INSTANCE_ID:
+        return LEGACY_SYSTEM_CONFIG
+    return INSTANCES_ROOT / instance_id / "config.json"
+
+
 def user_config_path() -> Path:
     home = Path.home()
     return home / "Library" / "Application Support" / "bifrost" / "config.json"
 
 
 def default_config_path() -> Path:
-    """Prefer system config when readable (LaunchDaemon), else user config."""
-    if SYSTEM_CONFIG.is_file() and os.access(SYSTEM_CONFIG, os.R_OK):
-        return SYSTEM_CONFIG
+    """Prefer a readable system instance config, else user config."""
+    if INSTANCES_ROOT.is_dir():
+        for child in sorted(INSTANCES_ROOT.iterdir()):
+            cfg = child / "config.json"
+            if cfg.is_file() and os.access(cfg, os.R_OK):
+                return cfg
+    if LEGACY_SYSTEM_CONFIG.is_file() and os.access(LEGACY_SYSTEM_CONFIG, os.R_OK):
+        return LEGACY_SYSTEM_CONFIG
     return user_config_path()
 
 
