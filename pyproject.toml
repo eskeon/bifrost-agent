@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bifrost-agent"
+version = "0.1.0"
+description = "Bifrost path-tunnel agent — connect a local Mac app to Bifrost"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Bifrost" }]
+keywords = ["bifrost", "tunnel", "websocket"]
+dependencies = [
+  "click>=8.1",
+  "httpx>=0.27",
+  "websockets>=12",
+]
+
+[project.urls]
+Homepage = "https://github.com/eskeon/go-bifrost-tunnel"
+Repository = "https://github.com/eskeon/go-bifrost-tunnel"
+
+[project.scripts]
+bifrost = "bifrost_agent.cli:main"
