@@ -40,12 +40,13 @@ bifrost version
 
 ```text
 a1b2c3d4e5f6
+  tunnel:  2
   state:   ● running
   url:     wss://bifrost.enfeca.cloud/api/v1/tunnel/connect
   logs:    /Library/Logs/bifrost-tunnel-a1b2c3d4e5f6.log
 ```
 
-State uses a green ● when the LaunchDaemon is running, red ● when stopped.
+`tunnel` is the Bifrost console tunnel id. State uses a green ● when the LaunchDaemon is running, red ● when stopped.
 
 Per-instance paths:
 

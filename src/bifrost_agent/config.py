@@ -20,6 +20,7 @@ LEGACY_INSTANCE_ID = "legacy"
 class Config:
     url: str
     token: str
+    tunnel_id: int | None = None
 
     def validate(self) -> None:
         if not (self.url or "").strip():
@@ -57,12 +58,28 @@ def default_config_path() -> Path:
     return user_config_path()
 
 
+def _parse_tunnel_id(raw: object) -> int | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    return n
+
+
 def load(path: Path | None = None) -> Config:
     p = path or default_config_path()
     if not p.is_file():
         raise FileNotFoundError(f"config not found: {p}")
     data = json.loads(p.read_text(encoding="utf-8"))
-    cfg = Config(url=str(data.get("url") or ""), token=str(data.get("token") or ""))
+    cfg = Config(
+        url=str(data.get("url") or ""),
+        token=str(data.get("token") or ""),
+        tunnel_id=_parse_tunnel_id(data.get("tunnel_id")),
+    )
     cfg.validate()
     return cfg
 
@@ -70,5 +87,8 @@ def load(path: Path | None = None) -> Config:
 def save(cfg: Config, path: Path) -> None:
     cfg.validate()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(cfg), indent=2) + "\n", encoding="utf-8")
+    payload = asdict(cfg)
+    if payload.get("tunnel_id") is None:
+        payload.pop("tunnel_id", None)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     os.chmod(path, 0o600)

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 class InstallToken:
     url: str
     token: str
+    tunnel_id: int | None = None
 
 
 def parse_install_token(raw: str) -> InstallToken:
@@ -40,4 +41,13 @@ def parse_install_token(raw: str) -> InstallToken:
     token = str(obj.get("token") or "").strip()
     if not url or not token:
         raise ValueError("install token missing url or token")
-    return InstallToken(url=url, token=token)
+    tunnel_id = None
+    raw_tid = obj.get("tunnel_id")
+    if raw_tid is not None and raw_tid != "":
+        try:
+            n = int(raw_tid)
+            if n > 0:
+                tunnel_id = n
+        except (TypeError, ValueError):
+            tunnel_id = None
+    return InstallToken(url=url, token=token, tunnel_id=tunnel_id)

@@ -42,7 +42,7 @@ def tunnel_install(token: str) -> None:
     """Install LaunchDaemon from a console install token (requires sudo)."""
     try:
         parsed = parse_install_token(token)
-        cfg = Config(url=parsed.url, token=parsed.token)
+        cfg = Config(url=parsed.url, token=parsed.token, tunnel_id=parsed.tunnel_id)
         instance_id = launchd_install(cfg)
     except PermissionError as exc:
         click.echo(f"error: {exc}", err=True)
@@ -51,6 +51,8 @@ def tunnel_install(token: str) -> None:
         click.echo(f"error: {exc}", err=True)
         sys.exit(1)
     click.echo(f"installed instance {instance_id}")
+    if cfg.tunnel_id:
+        click.echo(f"tunnel: {cfg.tunnel_id}")
     click.echo(f"config: {instance_config_path(instance_id)}")
     click.echo(f"logs:   {log_path_for(instance_id)}")
 
@@ -103,6 +105,8 @@ def tunnel_list() -> None:
         if i > 0:
             click.echo("")
         click.echo(row.id)
+        if row.tunnel_id:
+            click.echo(f"  tunnel:  {row.tunnel_id}")
         click.echo(f"  state:   {_format_state(row.loaded)}")
         if row.url:
             click.echo(f"  url:     {row.url}")
@@ -181,12 +185,13 @@ def _follow_log(path: Path) -> None:
 )
 def tunnel_serve(instance_id: str | None) -> None:
     """Background entrypoint for LaunchDaemon (not for interactive use)."""
+    path = instance_config_path(instance_id or LEGACY_INSTANCE_ID)
     try:
-        cfg = load(instance_config_path(instance_id or LEGACY_INSTANCE_ID))
+        cfg = load(path)
     except Exception as exc:  # noqa: BLE001
         click.echo(f"error: {exc}", err=True)
         sys.exit(1)
-    run_forever(cfg)
+    run_forever(cfg, path)
 
 
 @main.command("version")

@@ -12,8 +12,10 @@ from urllib.parse import urljoin, urlparse
 import httpx
 import websockets
 
+from pathlib import Path
+
 from bifrost_agent import __version__
-from bifrost_agent.config import Config
+from bifrost_agent.config import Config, save
 
 log = logging.getLogger("bifrost.agent")
 
@@ -133,7 +135,24 @@ async def _forward(client: httpx.AsyncClient, msg: dict[str, Any]) -> dict[str, 
     }
 
 
-async def _session(cfg: Config) -> None:
+def _persist_tunnel_id(cfg: Config, config_path: Path | None, tunnel_id: object) -> None:
+    """Remember console tunnel id in config so `bifrost tunnel list` can show it."""
+    try:
+        tid = int(tunnel_id)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return
+    if tid <= 0 or cfg.tunnel_id == tid:
+        return
+    cfg.tunnel_id = tid
+    if config_path is None:
+        return
+    try:
+        save(cfg, config_path)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not persist tunnel_id=%s: %s", tid, exc)
+
+
+async def _session(cfg: Config, config_path: Path | None = None) -> None:
     url = _ws_url(cfg.url)
     async with websockets.connect(
         url,
@@ -159,6 +178,7 @@ async def _session(cfg: Config) -> None:
             welcome.get("tunnel_id"),
             welcome.get("name"),
         )
+        _persist_tunnel_id(cfg, config_path, welcome.get("tunnel_id"))
 
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
             async for raw in ws:
@@ -181,12 +201,12 @@ async def _session(cfg: Config) -> None:
                     log.debug("ignore type=%s", typ)
 
 
-async def run(cfg: Config) -> None:
+async def run(cfg: Config, config_path: Path | None = None) -> None:
     cfg.validate()
     backoff = 1.0
     while True:
         try:
-            await _session(cfg)
+            await _session(cfg, config_path)
             backoff = 1.0
         except asyncio.CancelledError:
             raise
@@ -196,12 +216,12 @@ async def run(cfg: Config) -> None:
             backoff = min(backoff * 2, 30.0)
 
 
-def run_forever(cfg: Config) -> None:
+def run_forever(cfg: Config, config_path: Path | None = None) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
     try:
-        asyncio.run(run(cfg))
+        asyncio.run(run(cfg, config_path))
     except KeyboardInterrupt:
         pass

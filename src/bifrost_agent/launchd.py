@@ -40,6 +40,7 @@ class InstanceInfo:
     installed: bool
     loaded: bool
     url: str
+    tunnel_id: int | None = None
 
 
 def _require_root() -> None:
@@ -108,17 +109,28 @@ def _bootout(label: str) -> None:
     )
 
 
-def _load_config_url(path: Path) -> str:
+def _load_config_meta(path: Path) -> tuple[str, int | None]:
     if not path.is_file():
-        return ""
+        return "", None
     try:
-        return load(path).url
+        cfg = load(path)
+        return cfg.url, cfg.tunnel_id
     except Exception:  # noqa: BLE001
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            return str(raw.get("url") or "")
+            url = str(raw.get("url") or "")
+            tid_raw = raw.get("tunnel_id")
+            tid: int | None = None
+            if tid_raw is not None and tid_raw != "":
+                try:
+                    n = int(tid_raw)
+                    if n > 0:
+                        tid = n
+                except (TypeError, ValueError):
+                    tid = None
+            return url, tid
         except Exception:  # noqa: BLE001
-            return ""
+            return "", None
 
 
 def install(cfg: Config) -> str:
@@ -245,6 +257,7 @@ def _info_for(instance_id: str) -> InstanceInfo:
     log_path = log_path_for(instance_id)
     installed = plist_path.is_file()
     loaded = _is_loaded(label) if installed else False
+    url, tunnel_id = _load_config_meta(config_path)
     return InstanceInfo(
         id=instance_id,
         label=label,
@@ -253,5 +266,6 @@ def _info_for(instance_id: str) -> InstanceInfo:
         log_path=log_path,
         installed=installed,
         loaded=loaded,
-        url=_load_config_url(config_path),
+        url=url,
+        tunnel_id=tunnel_id,
     )
