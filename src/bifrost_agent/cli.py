@@ -102,12 +102,22 @@ def tunnel_list() -> None:
     for i, row in enumerate(rows):
         if i > 0:
             click.echo("")
-        state = "running" if row.loaded else "stopped"
         click.echo(row.id)
-        click.echo(f"  state:   {state}")
+        click.echo(f"  state:   {_format_state(row.loaded)}")
         if row.url:
             click.echo(f"  url:     {row.url}")
         click.echo(f"  logs:    {row.log_path}")
+
+
+def _format_state(running: bool) -> str:
+    """Colored status indicator for terminal list output."""
+    if running:
+        dot = click.style("●", fg="green")
+        label = click.style("running", fg="green")
+    else:
+        dot = click.style("●", fg="red")
+        label = click.style("stopped", fg="red")
+    return f"{dot} {label}"
 
 
 @tunnel.command("logs")
