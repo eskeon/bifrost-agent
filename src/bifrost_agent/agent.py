@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
+import socket
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
 import websockets
-
-from pathlib import Path
 
 from bifrost_agent import __version__
 from bifrost_agent.config import Config, save
@@ -21,6 +22,15 @@ log = logging.getLogger("bifrost.agent")
 
 MAX_BODY = 8 << 20
 SUBPROTOCOL = "bifrost-tunnel"
+
+# Protocol keepalive — detects half-open sockets after reboot / Bifrost restart.
+WS_PING_INTERVAL = 20.0
+WS_PING_TIMEOUT = 20.0
+WS_OPEN_TIMEOUT = 30.0
+WS_CLOSE_TIMEOUT = 5.0
+
+# Bifrost sends app-level ping ~every 25s. If nothing arrives, force reconnect.
+SERVER_IDLE_TIMEOUT = 90.0
 
 
 def _ws_url(url: str) -> str:
@@ -152,13 +162,35 @@ def _persist_tunnel_id(cfg: Config, config_path: Path | None, tunnel_id: object)
         log.warning("could not persist tunnel_id=%s: %s", tid, exc)
 
 
+async def _wait_for_network(url: str, attempts: int = 60) -> None:
+    """After reboot, LaunchDaemon often starts before DNS/network is ready."""
+    parsed = urlparse(_ws_url(url))
+    host = parsed.hostname
+    if not host:
+        return
+    for i in range(attempts):
+        try:
+            await asyncio.to_thread(socket.getaddrinfo, host, None)
+            if i > 0:
+                log.info("network ready for %s", host)
+            return
+        except OSError:
+            if i == 0 or (i + 1) % 5 == 0:
+                log.info("waiting for network (%s)… attempt %d/%d", host, i + 1, attempts)
+            await asyncio.sleep(1.0)
+    log.warning("network still unresolved for %s; connecting anyway", host)
+
+
 async def _session(cfg: Config, config_path: Path | None = None) -> None:
     url = _ws_url(cfg.url)
     async with websockets.connect(
         url,
         subprotocols=[SUBPROTOCOL],
         max_size=MAX_BODY + (1 << 20),
-        ping_interval=None,
+        ping_interval=WS_PING_INTERVAL,
+        ping_timeout=WS_PING_TIMEOUT,
+        open_timeout=WS_OPEN_TIMEOUT,
+        close_timeout=WS_CLOSE_TIMEOUT,
     ) as ws:
         await ws.send(
             json.dumps(
@@ -169,7 +201,7 @@ async def _session(cfg: Config, config_path: Path | None = None) -> None:
                 }
             )
         )
-        welcome_raw = await ws.recv()
+        welcome_raw = await asyncio.wait_for(ws.recv(), timeout=WS_OPEN_TIMEOUT)
         welcome = json.loads(welcome_raw)
         if welcome.get("type") != "welcome":
             raise RuntimeError(f"expected welcome, got {welcome.get('type')!r}")
@@ -180,33 +212,73 @@ async def _session(cfg: Config, config_path: Path | None = None) -> None:
         )
         _persist_tunnel_id(cfg, config_path, welcome.get("tunnel_id"))
 
+        send_lock = asyncio.Lock()
+        inflight: set[asyncio.Task[None]] = set()
+        last_server_msg = asyncio.get_running_loop().time()
+
+        async def send(payload: dict[str, Any]) -> None:
+            async with send_lock:
+                await ws.send(json.dumps(payload))
+
+        async def handle_http(msg: dict[str, Any]) -> None:
+            try:
+                res = await _forward(client, msg)
+                await send(res)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("http_req failed id=%s: %s", msg.get("id"), exc)
+
+        async def idle_watchdog() -> None:
+            while True:
+                await asyncio.sleep(15.0)
+                idle = asyncio.get_running_loop().time() - last_server_msg
+                if idle > SERVER_IDLE_TIMEOUT:
+                    log.warning("no server message for %.0fs; forcing reconnect", idle)
+                    await ws.close(code=1001, reason="idle timeout")
+                    return
+
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
-            async for raw in ws:
-                if isinstance(raw, bytes):
-                    raw = raw.decode("utf-8", errors="replace")
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    log.warning("bad frame")
-                    continue
-                typ = msg.get("type")
-                if typ == "ping":
-                    await ws.send(json.dumps({"type": "pong"}))
-                elif typ == "http_req":
-                    res = await _forward(client, msg)
-                    await ws.send(json.dumps(res))
-                elif typ == "error":
-                    log.error("server error: %s", msg.get("message"))
-                else:
-                    log.debug("ignore type=%s", typ)
+            watchdog = asyncio.create_task(idle_watchdog())
+            try:
+                async for raw in ws:
+                    last_server_msg = asyncio.get_running_loop().time()
+                    if isinstance(raw, bytes):
+                        raw = raw.decode("utf-8", errors="replace")
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        log.warning("bad frame")
+                        continue
+                    typ = msg.get("type")
+                    if typ == "ping":
+                        await send({"type": "pong"})
+                    elif typ == "http_req":
+                        # Must not await _forward here: console→program re-enters
+                        # the same tunnel and would deadlock the receive loop.
+                        task = asyncio.create_task(handle_http(msg))
+                        inflight.add(task)
+                        task.add_done_callback(inflight.discard)
+                    elif typ == "error":
+                        log.error("server error: %s", msg.get("message"))
+                    else:
+                        log.debug("ignore type=%s", typ)
+            finally:
+                watchdog.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watchdog
+                for task in list(inflight):
+                    task.cancel()
 
 
 async def run(cfg: Config, config_path: Path | None = None) -> None:
     cfg.validate()
+    log.info("bifrost-agent %s starting url=%s", __version__, cfg.url)
+    await _wait_for_network(cfg.url)
     backoff = 1.0
     while True:
         try:
             await _session(cfg, config_path)
+            # Clean server close — reconnect immediately.
+            log.warning("session ended; reconnecting")
             backoff = 1.0
         except asyncio.CancelledError:
             raise

@@ -150,6 +150,8 @@ def install(cfg: Config) -> str:
         "ProgramArguments": _daemon_program(instance_id),
         "RunAtLoad": True,
         "KeepAlive": True,
+        # Avoid rapid crash-loops right after reboot / bad token.
+        "ThrottleInterval": 10,
         "StandardOutPath": str(log_path),
         "StandardErrorPath": str(log_path),
     }
@@ -166,6 +168,26 @@ def install(cfg: Config) -> str:
     subprocess.run(["launchctl", "enable", f"system/{label}"], check=False)
     subprocess.run(["launchctl", "kickstart", "-k", f"system/{label}"], check=False)
     return instance_id
+
+
+def repair_all() -> list[str]:
+    """Rewrite LaunchDaemon plists from existing configs and restart them.
+
+    Use after upgrading bifrost-agent so ProgramArguments points at the new
+    binary and keepalive fixes take effect without a new console token.
+    """
+    _require_root()
+    repaired: list[str] = []
+    for row in list_instances():
+        if not row.config_path.is_file():
+            continue
+        try:
+            cfg = load(row.config_path)
+        except Exception:  # noqa: BLE001
+            continue
+        install(cfg)
+        repaired.append(row.id)
+    return repaired
 
 
 def uninstall(instance_id: str) -> None:

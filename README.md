@@ -31,10 +31,22 @@ sudo bifrost tunnel install <token>     # add/replace one instance
 bifrost tunnel list                     # id, state, url, logs path
 bifrost tunnel logs <id>                # last lines of that instance
 bifrost tunnel logs <id> -f             # follow logs
+sudo bifrost tunnel repair              # rewrite plists + restart after upgrade
 sudo bifrost tunnel uninstall <id>      # remove one instance
 sudo bifrost tunnel uninstall --all     # remove every instance
 bifrost version
 ```
+
+LaunchDaemons use `RunAtLoad` + `KeepAlive` so agents start on boot. After reboot the agent waits for DNS, then connects with WebSocket keepalive so a dead session (Bifrost restart, sleep, network blip) reconnects instead of sitting “running” but offline.
+
+### Upgrade
+
+```bash
+pipx upgrade bifrost-agent
+sudo bifrost tunnel repair
+```
+
+`repair` refreshes every installed LaunchDaemon to the new binary and restarts them — no new console token required.
 
 `list` example:
 
@@ -45,8 +57,6 @@ a1b2c3d4e5f6
   url:     wss://bifrost.enfeca.cloud/api/v1/tunnel/connect
   logs:    /Library/Logs/bifrost-tunnel-a1b2c3d4e5f6.log
 ```
-
-`tunnel` is the Bifrost console tunnel id. State uses a green ● when the LaunchDaemon is running, red ● when stopped.
 
 Per-instance paths:
 

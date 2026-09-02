@@ -21,6 +21,7 @@ from bifrost_agent.launchd import get_instance
 from bifrost_agent.launchd import install as launchd_install
 from bifrost_agent.launchd import list_instances
 from bifrost_agent.launchd import log_path_for
+from bifrost_agent.launchd import repair_all
 from bifrost_agent.launchd import uninstall as launchd_uninstall
 from bifrost_agent.launchd import uninstall_all
 
@@ -122,6 +123,28 @@ def _format_state(running: bool) -> str:
         dot = click.style("●", fg="red")
         label = click.style("stopped", fg="red")
     return f"{dot} {label}"
+
+
+@tunnel.command("repair")
+def tunnel_repair() -> None:
+    """Refresh LaunchDaemons from saved configs and restart (requires sudo).
+
+    Use after `pipx upgrade bifrost-agent` so boot/reconnect fixes apply
+    without copying a new install token from the console.
+    """
+    try:
+        repaired = repair_all()
+    except PermissionError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(1)
+    if not repaired:
+        click.echo("No tunnel agents installed.")
+        return
+    for rid in repaired:
+        click.echo(f"repaired {rid}")
 
 
 @tunnel.command("logs")
