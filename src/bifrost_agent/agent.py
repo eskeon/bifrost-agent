@@ -8,10 +8,12 @@ import contextlib
 import json
 import logging
 import socket
+import ssl
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
+import certifi
 import httpx
 import websockets
 
@@ -181,8 +183,14 @@ async def _wait_for_network(url: str, attempts: int = 60) -> None:
     log.warning("network still unresolved for %s; connecting anyway", host)
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """CA bundle that works for Homebrew/pipx LaunchDaemons (root, no system certs)."""
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 async def _session(cfg: Config, config_path: Path | None = None) -> None:
     url = _ws_url(cfg.url)
+    ssl_ctx = _ssl_context() if url.startswith("wss://") else None
     async with websockets.connect(
         url,
         subprotocols=[SUBPROTOCOL],
@@ -191,6 +199,7 @@ async def _session(cfg: Config, config_path: Path | None = None) -> None:
         ping_timeout=WS_PING_TIMEOUT,
         open_timeout=WS_OPEN_TIMEOUT,
         close_timeout=WS_CLOSE_TIMEOUT,
+        ssl=ssl_ctx,
     ) as ws:
         await ws.send(
             json.dumps(
